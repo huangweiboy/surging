@@ -1,5 +1,4 @@
-﻿
-using Autofac;
+﻿using Autofac;
 using Surging.Core.CPlatform.Support;
 using System.Linq;
 using Surging.Core.CPlatform.Routing;
@@ -28,19 +27,25 @@ namespace Surging.Core.CPlatform
     {
         public static IServiceHostBuilder UseServer(this IServiceHostBuilder hostBuilder, string ip, int port, string token = "True")
         {
-            return hostBuilder.MapServices(mapper =>
+            return hostBuilder.MapServices(async mapper =>
             {
                 BuildServiceEngine(mapper);
-                mapper.Resolve<IServiceCommandManager>().SetServiceCommandsAsync();
-                string serviceToken = mapper.Resolve<IServiceTokenGenerator>().GeneratorToken(token);
-                int _port = AppConfig.ServerOptions.Port= AppConfig.ServerOptions.Port == 0 ? port : AppConfig.ServerOptions.Port;
+                if (!AppConfig.ServerOptions.DisableServiceRegistration)
+                {
+                    await mapper.Resolve<IServiceCommandManager>().SetServiceCommandsAsync();
+                }
+                  mapper.Resolve<IServiceTokenGenerator>().GeneratorToken(token);
+                int _port = AppConfig.ServerOptions.Port = AppConfig.ServerOptions.Port == 0 ? port : AppConfig.ServerOptions.Port;
                 string _ip = AppConfig.ServerOptions.Ip = AppConfig.ServerOptions.Ip ?? ip;
                 _port = AppConfig.ServerOptions.Port = AppConfig.ServerOptions.IpEndpoint?.Port ?? _port;
-                _ip = AppConfig.ServerOptions.Ip =AppConfig.ServerOptions.IpEndpoint?.Address.ToString() ?? _ip;
+                _ip = AppConfig.ServerOptions.Ip = AppConfig.ServerOptions.IpEndpoint?.Address.ToString() ?? _ip;
                 _ip = NetUtils.GetHostAddress(_ip);
-
-                ConfigureRoute(mapper, serviceToken);
+                if (!AppConfig.ServerOptions.DisableServiceRegistration)
+                {
+                    await ConfigureRoute(mapper);
+                }
                 mapper.Resolve<IModuleProvider>().Initialize();
+              
                 var serviceHosts = mapper.Resolve<IList<Runtime.Server.IServiceHost>>();
                 Task.Factory.StartNew(async () =>
                 {
@@ -56,7 +61,7 @@ namespace Surging.Core.CPlatform
             var serverOptions = new SurgingServerOptions();
             options.Invoke(serverOptions);
             AppConfig.ServerOptions = serverOptions;
-            return hostBuilder.UseServer(serverOptions.Ip,serverOptions.Port,serverOptions.Token);
+            return hostBuilder.UseServer(serverOptions.Ip, serverOptions.Port, serverOptions.Token);
         }
 
         public static IServiceHostBuilder UseClient(this IServiceHostBuilder hostBuilder)
@@ -70,9 +75,9 @@ namespace Surging.Core.CPlatform
                     return new ServiceSubscriber
                     {
                         Address = new[] { new IpAddressModel {
-                     Ip = Dns.GetHostEntry(Dns.GetHostName())
-                 .AddressList.FirstOrDefault<IPAddress>
-                 (a => a.AddressFamily.ToString().Equals("InterNetwork")).ToString() } },
+                             Ip = Dns.GetHostEntry(Dns.GetHostName())
+                             .AddressList.FirstOrDefault<IPAddress>
+                             (a => a.AddressFamily.ToString().Equals("InterNetwork")).ToString() } },
                         ServiceDescriptor = i.Descriptor
                     };
                 }).ToList();
@@ -88,14 +93,14 @@ namespace Surging.Core.CPlatform
                 var builder = new ContainerBuilder();
 
                 container.Resolve<IServiceEngineBuilder>().Build(builder);
-                 var configBuilder=  container.Resolve<IConfigurationBuilder>();
+                var configBuilder = container.Resolve<IConfigurationBuilder>();
                 var appSettingPath = Path.Combine(AppConfig.ServerOptions.RootPath, "appsettings.json");
-                configBuilder.AddCPlatformFile("${appsettingspath}|"+ appSettingPath, optional: false, reloadOnChange: true);
+                configBuilder.AddCPlatformFile("${appsettingspath}|" + appSettingPath, optional: false, reloadOnChange: true);
                 builder.Update(container);
             }
         }
 
-        public static void ConfigureRoute(IContainer mapper,string serviceToken)
+        public static async Task ConfigureRoute(IContainer mapper)
         {
             if (AppConfig.ServerOptions.Protocol == CommunicationProtocol.Tcp ||
              AppConfig.ServerOptions.Protocol == CommunicationProtocol.None)
@@ -103,12 +108,12 @@ namespace Surging.Core.CPlatform
                 var routeProvider = mapper.Resolve<IServiceRouteProvider>();
                 if (AppConfig.ServerOptions.EnableRouteWatch)
                     new ServiceRouteWatch(mapper.Resolve<CPlatformContainer>(),
-                        () => routeProvider.RegisterRoutes(
+                        async () => await routeProvider.RegisterRoutes(
                         Math.Round(Convert.ToDecimal(Process.GetCurrentProcess().TotalProcessorTime.TotalSeconds), 2, MidpointRounding.AwayFromZero)));
                 else
-                    routeProvider.RegisterRoutes(0);
+                    await routeProvider.RegisterRoutes(0);
             }
         }
-         
+
     }
 }

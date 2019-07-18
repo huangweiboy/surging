@@ -26,9 +26,9 @@ namespace Surging.Core.Consul
 {
     public class ConsulModule : EnginePartModule
     {
-        public override void Initialize(CPlatformContainer serviceProvider)
+        public override void Initialize(AppModuleContext context)
         {
-            base.Initialize(serviceProvider);
+            base.Initialize(context);
         }
 
         /// <summary>
@@ -216,6 +216,7 @@ namespace Surging.Core.Consul
                 config = new ConfigInfo(
                    option.ConnectionString,
                     TimeSpan.FromSeconds(sessionTimeout),
+                    option.LockDelay ?? config.LockDelay,
                     option.RoutePath ?? config.RoutePath,
                     option.SubscriberPath ?? config.SubscriberPath,
                     option.CommandPath ?? config.CommandPath,

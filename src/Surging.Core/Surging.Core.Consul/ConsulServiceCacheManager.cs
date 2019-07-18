@@ -46,7 +46,8 @@ namespace Surging.Core.Consul
             var clients = await _consulClientFactory.GetClients();
             foreach (var client in clients)
             {
-                var queryResult = await client.KV.List(_configInfo.CachePath); 
+                // 根据前缀获取consul结果
+                var queryResult = await client.KV.List(_configInfo.CachePath);
                 var response = queryResult.Response;
                 if (response != null)
                 {
@@ -65,16 +66,8 @@ namespace Surging.Core.Consul
         public override async Task SetCachesAsync(IEnumerable<ServiceCache> caches)
         {
             var serviceCaches = await GetCaches(caches.Select(p => $"{ _configInfo.CachePath}{p.CacheDescriptor.Id}"));
-            foreach (var cache in caches)
-            {
-                var serviceCache = serviceCaches.Where(p => p.CacheDescriptor.Id == cache.CacheDescriptor.Id).FirstOrDefault();
-                if (serviceCache != null)
-                {
-                    cache.CacheEndpoint = serviceCache.CacheEndpoint.Concat(
-                      cache.CacheEndpoint.Except(serviceCache.CacheEndpoint));
-                }
-            }
-            await RemoveExceptCachesAsync(caches);
+          
+            await RemoveCachesAsync(caches);
             await base.SetCachesAsync(caches);
         }
 
@@ -154,7 +147,7 @@ namespace Surging.Core.Consul
 
         #region 私有方法
 
-        private async Task RemoveExceptCachesAsync(IEnumerable<ServiceCache> caches)
+        private async Task RemoveCachesAsync(IEnumerable<ServiceCache> caches)
         {
             var path = _configInfo.CachePath;
             caches = caches.ToArray();
@@ -164,18 +157,12 @@ namespace Surging.Core.Consul
                 var clients = await _consulClientFactory.GetClients();
                 foreach (var client in clients)
                 {
-                    var oldCacheIds = _serviceCaches.Select(i => i.CacheDescriptor.Id).ToArray();
-                    var newCacheIds = _serviceCaches.Select(i => i.CacheDescriptor.Id).ToArray();
-                    var deletedCacheIds = oldCacheIds.Except(newCacheIds).ToArray();
+                    
+                    var deletedCacheIds = caches.Select(i => i.CacheDescriptor.Id).ToArray();
                     foreach (var deletedCacheId in deletedCacheIds)
                     {
-                        var endpoints = _serviceCaches.Where(p => p.CacheDescriptor.Id == deletedCacheId).Select(p => p.CacheEndpoint).FirstOrDefault();
                         var nodePath = $"{path}{deletedCacheId}";
-                        foreach (var endpoint in endpoints)
-                        {
-                            if (caches.Any(p => p.CacheEndpoint.Select(a => a.ToString()).Contains(endpoint.ToString())))
-                                await client.KV.Delete(nodePath);
-                        }
+                        await client.KV.Delete(nodePath);
                     }
                 }
             }

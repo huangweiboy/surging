@@ -1,25 +1,35 @@
 ﻿using Autofac;
-using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Surging.Core.CPlatform;
 using Surging.Core.CPlatform.Engines;
 using Surging.Core.CPlatform.Module;
+using Surging.Core.CPlatform.Routing;
 using Surging.Core.CPlatform.Runtime.Server;
-using Surging.Core.CPlatform.Runtime.Server.Implementation;
 using Surging.Core.CPlatform.Serialization;
-using Surging.Core.KestrelHttpServer.Internal;
-using Surging.Core.Swagger;
-using System;
-using System.Collections.Generic;
-using System.Text;
+using Surging.Core.KestrelHttpServer.Filters;
+using System.Net;
 
 namespace Surging.Core.KestrelHttpServer
 {
     public class KestrelHttpModule : EnginePartModule
     {
-        public override void Initialize(CPlatformContainer serviceProvider)
+        public override void Initialize(AppModuleContext context)
         {
-            base.Initialize(serviceProvider);
+            base.Initialize(context);
+        }
+
+        public virtual void Initialize(ApplicationInitializationContext builder)
+        {
+        }
+
+        public virtual void RegisterBuilder(WebHostContext context)
+        {
+        }
+
+        public virtual void RegisterBuilder(ConfigurationContext context)
+        {
         }
 
         /// <summary>
@@ -29,14 +39,6 @@ namespace Surging.Core.KestrelHttpServer
         protected override void RegisterBuilder(ContainerBuilderWrapper builder)
         {
             base.RegisterBuilder(builder);
-            var section = CPlatform.AppConfig.GetSection("Swagger");
-            if (section.Exists())
-            {
-                AppConfig.SwaggerOptions = section.Get<Info>();
-                AppConfig.SwaggerConfig = section.Get<DocumentConfiguration>();
-            }
-            builder.RegisterType(typeof(DefaultServiceSchemaProvider)).As(typeof(IServiceSchemaProvider)).SingleInstance();
-
             builder.RegisterType(typeof(HttpExecutor)).As(typeof(IServiceExecutor))
                 .Named<IServiceExecutor>(CommunicationProtocol.Http.ToString()).SingleInstance();
             if (CPlatform.AppConfig.ServerOptions.Protocol == CommunicationProtocol.Http)
@@ -56,9 +58,10 @@ namespace Surging.Core.KestrelHttpServer
                 return new KestrelHttpMessageListener(
                     provider.Resolve<ILogger<KestrelHttpMessageListener>>(),
                     provider.Resolve<ISerializer<string>>(),
-                    provider.Resolve<IServiceSchemaProvider>(),
                      provider.Resolve<IServiceEngineLifetime>(),
-                     provider.Resolve<IServiceEntryProvider>()
+                     provider.Resolve<IModuleProvider>(),
+                    provider.Resolve<IServiceRouteProvider>(),
+                     provider.Resolve<CPlatformContainer>()
                       );
             }).SingleInstance();
             builder.Register(provider =>
@@ -67,7 +70,8 @@ namespace Surging.Core.KestrelHttpServer
                 var messageListener = provider.Resolve<KestrelHttpMessageListener>();
                 return new DefaultHttpServiceHost(async endPoint =>
                 {
-                    await messageListener.StartAsync(endPoint);
+                    var address = endPoint as IPEndPoint;
+                    await messageListener.StartAsync(address?.Address, address?.Port);
                     return messageListener;
                 }, executor, messageListener);
 
@@ -81,18 +85,21 @@ namespace Surging.Core.KestrelHttpServer
                 return new KestrelHttpMessageListener(
                     provider.Resolve<ILogger<KestrelHttpMessageListener>>(),
                     provider.Resolve<ISerializer<string>>(),
-                    provider.Resolve<IServiceSchemaProvider>(), 
                      provider.Resolve<IServiceEngineLifetime>(),
-                    provider.Resolve<IServiceEntryProvider>()
+                       provider.Resolve<IModuleProvider>(),
+                       provider.Resolve<IServiceRouteProvider>(),
+                     provider.Resolve<CPlatformContainer>()
+
                       );
             }).SingleInstance();
             builder.Register(provider =>
             {
                 var executor = provider.ResolveKeyed<IServiceExecutor>(CommunicationProtocol.Http.ToString());
-                var messageListener = provider.Resolve<KestrelHttpMessageListener>(); 
+                var messageListener = provider.Resolve<KestrelHttpMessageListener>();
                 return new HttpServiceHost(async endPoint =>
                 {
-                    await messageListener.StartAsync(endPoint);
+                    var address = endPoint as IPEndPoint;
+                    await messageListener.StartAsync(address?.Address,address?.Port);
                     return messageListener;
                 }, executor, messageListener);
 

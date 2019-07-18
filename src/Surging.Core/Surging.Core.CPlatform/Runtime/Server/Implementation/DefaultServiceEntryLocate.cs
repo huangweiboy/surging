@@ -37,8 +37,8 @@ namespace Surging.Core.CPlatform.Runtime.Server.Implementation
             string routePath = httpMessage.RoutePath;
             if (httpMessage.RoutePath.AsSpan().IndexOf("/") == -1)
                 routePath = $"/{routePath}";
-            var serviceEntries = _serviceEntryManager.GetEntries();
-            return serviceEntries.SingleOrDefault(i => i.RoutePath == routePath);
+            var serviceEntries = _serviceEntryManager.GetAllEntries();
+            return serviceEntries.SingleOrDefault(i => i.RoutePath == routePath && !i.Descriptor.GetMetadata<bool>("IsOverload"));
         }
 
         #endregion Implementation of IServiceEntryLocate

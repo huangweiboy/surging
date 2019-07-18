@@ -15,10 +15,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Surging.Core.Consul
 {
+    /// <summary>
+    /// consul服务路由管理器 
+    /// </summary>
     public class ConsulServiceRouteManager : ServiceRouteManagerBase, IDisposable
     {
         private readonly ConfigInfo _configInfo;
@@ -44,18 +48,24 @@ namespace Surging.Core.Consul
             _consulClientProvider = consulClientProvider;
             _manager = manager;
             _serviceHeartbeatManager = serviceHeartbeatManager;
-             EnterRoutes().Wait();
+            EnterRoutes().Wait();
         }
 
+        /// <summary>
+        /// 清空服务路由
+        /// </summary>
+        /// <returns></returns>
         public override async Task ClearAsync()
         {
             var clients = await _consulClientProvider.GetClients();
             foreach (var client in clients)
             {
+                //根据前缀获取consul结果
                 var queryResult = await client.KV.List(_configInfo.RoutePath);
                 var response = queryResult.Response;
                 if (response != null)
                 {
+                    //删除操作
                     foreach (var result in response)
                     {
                         await client.KV.DeleteCAS(result);
@@ -65,7 +75,7 @@ namespace Surging.Core.Consul
         }
 
         public void Dispose()
-        { 
+        {
         }
 
         /// <summary>
@@ -80,28 +90,36 @@ namespace Surging.Core.Consul
 
         public override async Task SetRoutesAsync(IEnumerable<ServiceRoute> routes)
         {
-            await _consulClientProvider.Check();
-            var hostAddr = NetUtils.GetHostAddress();
-            var serviceRoutes = await GetRoutes(routes.Select(p => $"{ _configInfo.RoutePath}{p.ServiceDescriptor.Id}"));
-            foreach (var route in routes)
+            var locks = await CreateLock();
+            try
             {
-                var serviceRoute = serviceRoutes.Where(p => p.ServiceDescriptor.Id == route.ServiceDescriptor.Id).FirstOrDefault();
-
-                if (serviceRoute != null)
+                await _consulClientProvider.Check();
+                var hostAddr = NetUtils.GetHostAddress();
+                var serviceRoutes = await GetRoutes(routes.Select(p => $"{ _configInfo.RoutePath}{p.ServiceDescriptor.Id}"));
+                foreach (var route in routes)
                 {
-                    var addresses = serviceRoute.Address.Concat(
-                      route.Address.Except(serviceRoute.Address)).ToList();
+                    var serviceRoute = serviceRoutes.Where(p => p.ServiceDescriptor.Id == route.ServiceDescriptor.Id).FirstOrDefault();
 
-                    foreach (var address in route.Address)
+                    if (serviceRoute != null)
                     {
-                        addresses.Remove(addresses.Where(p => p.ToString() == address.ToString()).FirstOrDefault());
-                        addresses.Add(address);
+                        var addresses = serviceRoute.Address.Concat(
+                          route.Address.Except(serviceRoute.Address)).ToList();
+
+                        foreach (var address in route.Address)
+                        {
+                            addresses.Remove(addresses.Where(p => p.ToString() == address.ToString()).FirstOrDefault());
+                            addresses.Add(address);
+                        }
+                        route.Address = addresses;
                     }
-                    route.Address = addresses;
                 }
+                await RemoveExceptRoutesAsync(routes, hostAddr);
+                await base.SetRoutesAsync(routes);
             }
-            await RemoveExceptRoutesAsync(routes, hostAddr);
-            await base.SetRoutesAsync(routes);
+            finally
+            {
+                locks.ForEach(p => p.Release());
+            }
         }
 
         public override async Task RemveAddressAsync(IEnumerable<AddressModel> Address)
@@ -114,13 +132,13 @@ namespace Surging.Core.Consul
                     route.Address = route.Address.Except(Address);
                 }
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 throw ex;
             }
             await base.SetRoutesAsync(routes);
         }
-        
+
         protected override async Task SetRoutesAsync(IEnumerable<ServiceRouteDescriptor> routes)
         {
             var clients = await _consulClientProvider.GetClients();
@@ -156,6 +174,20 @@ namespace Surging.Core.Consul
                     }
                 }
             }
+        }
+
+        private async Task<List<IDistributedLock>> CreateLock()
+        {
+            var result = new List<IDistributedLock>();
+            var clients = await _consulClientProvider.GetClients();
+            foreach (var client in clients)
+            {
+                var distributedLock = await client.AcquireLock($"lock_{_configInfo.RoutePath}", _configInfo.LockDelay == 0 ?
+                    default :
+                     new CancellationTokenSource(TimeSpan.FromSeconds(_configInfo.LockDelay)).Token);
+                result.Add(distributedLock);
+            }
+            return result;
         }
 
         private async Task<ServiceRoute> GetRoute(byte[] data)
@@ -212,13 +244,14 @@ namespace Surging.Core.Consul
         private async Task<ServiceRoute> GetRoute(string path)
         {
             ServiceRoute result = null;
-            var client =await GetConsulClient();
+            var client = await GetConsulClient();
             var watcher = new NodeMonitorWatcher(GetConsulClient, _manager, path,
-                async (oldData, newData) => await NodeChange(oldData, newData),tmpPath=> {
+                async (oldData, newData) => await NodeChange(oldData, newData), tmpPath =>
+                {
                     var index = tmpPath.LastIndexOf("/");
                     return _serviceHeartbeatManager.ExistsWhitelist(tmpPath.Substring(index + 1));
-                }); 
-         
+                });
+
             var queryResult = await client.KV.Keys(path);
             if (queryResult.Response != null)
             {
@@ -234,7 +267,7 @@ namespace Surging.Core.Consul
 
         private async ValueTask<ConsulClient> GetConsulClient()
         {
-           var client=await  _consulClientProvider.GetClient();
+            var client = await _consulClientProvider.GetClient();
             return client;
         }
 
@@ -242,13 +275,16 @@ namespace Surging.Core.Consul
         {
             if (_routes != null && _routes.Length > 0)
                 return;
-            Action<string[]> action = null ;
-            var client =await GetConsulClient();
+            Action<string[]> action = null;
+            var client = await GetConsulClient();
+            //判断是否启用子监视器
             if (_configInfo.EnableChildrenMonitor)
             {
+                //创建子监控类
                 var watcher = new ChildrenMonitorWatcher(GetConsulClient, _manager, _configInfo.RoutePath,
              async (oldChildrens, newChildrens) => await ChildrenChange(oldChildrens, newChildrens),
                (result) => ConvertPaths(result).Result);
+                //对委托绑定方法
                 action = currentData => watcher.SetCurrentData(currentData);
             }
             if (client.KV.Keys(_configInfo.RoutePath).Result.Response?.Count() > 0)
@@ -256,7 +292,9 @@ namespace Surging.Core.Consul
                 var result = await client.GetChildrenAsync(_configInfo.RoutePath);
                 var keys = await client.KV.Keys(_configInfo.RoutePath);
                 var childrens = result;
+                //传参数到方法中
                 action?.Invoke(ConvertPaths(childrens).Result.Select(key => $"{_configInfo.RoutePath}{key}").ToArray());
+                //重新赋值到routes中
                 _routes = await GetRoutes(keys.Response);
             }
             else
@@ -316,11 +354,17 @@ namespace Surging.Core.Consul
                         .Where(i => i.ServiceDescriptor.Id != newRoute.ServiceDescriptor.Id)
                         .Concat(new[] { newRoute }).ToArray();
             }
-            
+
             //触发路由变更事件。
             OnChanged(new ServiceRouteChangedEventArgs(newRoute, oldRoute));
         }
 
+        /// <summary>
+        /// 数据更新
+        /// </summary>
+        /// <param name="oldChildrens">旧的节点信息</param>
+        /// <param name="newChildrens">最新的节点信息</param>
+        /// <returns></returns>
         private async Task ChildrenChange(string[] oldChildrens, string[] newChildrens)
         {
             if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
@@ -345,12 +389,14 @@ namespace Surging.Core.Consul
             var routes = _routes.ToArray();
             lock (_routes)
             {
+                #region 节点变更操作
                 _routes = _routes
                     //删除无效的节点路由。
                     .Where(i => !deletedChildrens.Contains($"{_configInfo.RoutePath}{i.ServiceDescriptor.Id}"))
                     //连接上新的路由。
                     .Concat(newRoutes)
                     .ToArray();
+                #endregion
             }
             //需要删除的路由集合。
             var deletedRoutes = routes.Where(i => deletedChildrens.Contains($"{_configInfo.RoutePath}{i.ServiceDescriptor.Id}")).ToArray();
